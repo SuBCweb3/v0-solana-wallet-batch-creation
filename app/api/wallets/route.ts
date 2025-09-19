@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { Redis } from "@upstash/redis"
 
 const redis = new Redis({
@@ -6,30 +6,55 @@ const redis = new Redis({
   token: process.env.KV_REST_API_TOKEN!,
 })
 
+export async function POST(request: NextRequest) {
+  try {
+    const { wallets } = await request.json()
+
+    // 生成批次ID
+    const batchId = `batch_${Date.now()}`
+
+    // 保存钱包批次信息
+    await redis.hset(`wallets:${batchId}`, {
+      createdAt: new Date().toISOString(),
+      count: wallets.length,
+      wallets: JSON.stringify(wallets),
+    })
+
+    // 添加到批次列表
+    await redis.lpush("wallet_batches", batchId)
+
+    return NextResponse.json({
+      success: true,
+      batchId,
+      message: `成功保存 ${wallets.length} 个钱包到数据库`,
+    })
+  } catch (error) {
+    console.error("保存钱包失败:", error)
+    return NextResponse.json({ success: false, message: "保存钱包失败" }, { status: 500 })
+  }
+}
+
 export async function GET() {
   try {
-    // 获取所有钱包ID
-    const walletIds = (await redis.smembers("wallet:ids")) as string[]
+    // 获取所有批次ID
+    const batchIds = await redis.lrange("wallet_batches", 0, -1)
 
-    if (!walletIds || walletIds.length === 0) {
-      return NextResponse.json({ wallets: [] })
-    }
-
-    // 获取所有钱包数据
-    const wallets = []
-    for (const id of walletIds) {
-      const walletData = await redis.hgetall(`wallet:${id}`)
-      if (walletData && Object.keys(walletData).length > 0) {
-        wallets.push(walletData)
+    const batches = []
+    for (const batchId of batchIds) {
+      const batchData = await redis.hgetall(`wallets:${batchId}`)
+      if (batchData) {
+        batches.push({
+          id: batchId,
+          createdAt: batchData.createdAt,
+          count: batchData.count,
+          wallets: JSON.parse(batchData.wallets as string),
+        })
       }
     }
 
-    // 按创建时间排序（最新的在前）
-    wallets.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-
-    return NextResponse.json({ wallets })
+    return NextResponse.json({ success: true, batches })
   } catch (error) {
-    console.error("Error fetching wallets:", error)
-    return NextResponse.json({ error: "获取钱包列表失败" }, { status: 500 })
+    console.error("获取钱包失败:", error)
+    return NextResponse.json({ success: false, message: "获取钱包失败" }, { status: 500 })
   }
 }
